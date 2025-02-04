@@ -22,71 +22,75 @@ def normalize_name(name):
 
 # Function to load ALL sheets in the Excel file
 def load_excel(file):
-    all_sheets = pd.read_excel(file, sheet_name=None, dtype=str)  # Load all sheets as dictionary
+    all_sheets = pd.read_excel(file, sheet_name=None, dtype=str)  # Load all sheets as a dictionary
     combined_data = pd.DataFrame()  # Placeholder for merged data
 
-    # Loop through each sheet and extract company names
+    # List of possible company name columns
+    possible_names = {"Company", "Company Name", "Business Name", "Firm", "Member Name"}
+
     for sheet_name, df in all_sheets.items():
         df = df.fillna('')  # Replace NaN values with empty strings
         df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)  # Trim spaces
 
-        # Identify the correct column for company names
-        possible_names = ["Company", "Company Name", "Business Name", "Firm", "Member Name"]
-        found_column = None
-        for col in df.columns:
-            if col.strip() in possible_names:
-                found_column = col.strip()
-                break
+        found_columns = [col for col in df.columns if col.strip() in possible_names]
 
-        if found_column:
-            combined_data = pd.concat([combined_data, df[[found_column]]], ignore_index=True)
+        if found_columns:
+            combined_data = pd.concat([combined_data, df[found_columns]], ignore_index=True)
 
-    # Return a set of normalized company names
-    return {normalize_name(name) for name in combined_data.iloc[:, 0].dropna()}
+        # Debugging output
+        print(f"Processed sheet: {sheet_name}, Found columns: {found_columns}, Extracted rows: {len(df)}")
 
-# Function to extract only company names from the Word document (left side, first line only)
+    # Normalize and return unique company names
+    return {normalize_name(name) for col in combined_data.columns for name in combined_data[col].dropna()}
+
+# Function to extract only the first line (company name) from the Word document
 def extract_company_names(doc):
     company_names = set()
+    
+    # List of names and provinces to exclude
+    EXCLUDE_NAMES = {
+        "northwest territories", "saskatchewan", "new brunswick", "manitoba", "quebec", 
+        "new foundland", "nova scotia", "british columbia", "alberta", "ontario", "branches",
+        "gary sandlac", "rick farrell", "brad cook", "kyle sayer", "steve fry"
+    }
+
     lines = [para.text.strip() for para in doc.paragraphs if para.text.strip()]  # Remove empty lines
 
     i = 0
     while i < len(lines):
         text = lines[i]  # Get first line (assumed company name)
 
-        # Ignore lines with numbers (phone numbers), websites, emails
-        if re.search(r'\d', text) or "@" in text or "www." in text or ".com" in text or ".ca" in text:
+        # Ignore lines that contain numbers, emails, or websites
+        if re.search(r"\d", text) or "@" in text or "www." in text or ".com" in text or ".ca" in text:
             i += 1
             continue
 
-        # Ignore provinces and general words
-        normalized_text = text.lower().strip()
-        if normalized_text in EXCLUDE_WORDS:
+        # Ignore common address indicators (e.g., "Street", "Avenue", "Drive", etc.)
+        if re.search(r"\b(Street|St\.|Avenue|Ave\.|Drive|Dr\.|Road|Rd\.|Blvd|Highway|Hwy|Suite|PO Box|Postal)\b", text, re.IGNORECASE):
             i += 1
             continue
 
-        # Ignore short words (likely names or irrelevant text)
-        if len(normalized_text.split()) <= 2:  # Likely a personal name
-            i += 1
-            continue
+        # Normalize and exclude unwanted names
+        normalized_text = normalize_name(text)
+        if normalized_text not in EXCLUDE_NAMES:
+            company_names.add(normalized_text)
 
-        # Normalize and add only the first line of each block
-        company_names.add(text)
-
-        # Skip the next 3 lines (address, phone number, contact)
-        i += 4
+        # Skip the next few lines (typically address, contact info)
+        i += 4  
 
     return company_names
 
+
+
 # Function to perform fuzzy matching (handles slight name variations)
-def find_closest_match(company, company_list):
-    best_match = None
-    highest_score = 0
-    for comp in company_list:
-        score = fuzz.ratio(company, comp)  # Compute similarity score
-        if score > highest_score:
-            highest_score = score
-            best_match = comp
-    return best_match if highest_score >= 85 else None  # Match if score is 85% or higher
+def fuzzy_match(set1, set2, threshold=90):
+    matched = set()
+    for name1 in set1:
+        for name2 in set2:
+            if fuzz.ratio(name1, name2) >= threshold:
+                matched.add(name1)
+                break
+    return matched
 
 # Streamlit UI
 st.title("Membership Directory Checker")
@@ -111,20 +115,15 @@ if excel_file and word_file:
     st.write(f"Total Companies in Word Document: {len(word_companies)}")
 
     # Identify missing companies using exact and fuzzy matching
-    missing_in_word = set()
-    for company in excel_companies:
-        if company not in word_companies:
-            match = find_closest_match(company, word_companies)
-            if match is None:
-                missing_in_word.add(company)  # Only add if no good match is found
+    missing_in_word = excel_companies - word_companies
+    extra_in_word = word_companies - excel_companies
 
-    # Identify extra companies in Word that are not in Excel
-    extra_in_word = set()
-    for company in word_companies:
-        if company not in excel_companies:
-            match = find_closest_match(company, excel_companies)
-            if match is None:
-                extra_in_word.add(company)  # Only add if no good match is found
+    # Apply fuzzy matching to reduce false positives
+    fuzzy_matched = fuzzy_match(missing_in_word, word_companies)
+    missing_in_word -= fuzzy_matched  # Remove fuzzy-matched names from missing list
+
+    fuzzy_matched_extra = fuzzy_match(extra_in_word, excel_companies)
+    extra_in_word -= fuzzy_matched_extra  # Remove fuzzy-matched names from extra list
 
     st.write("### Missing Companies (Need to be Added)")
     if missing_in_word:
