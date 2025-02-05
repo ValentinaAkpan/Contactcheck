@@ -5,13 +5,14 @@ from io import BytesIO
 import re
 from thefuzz import fuzz
 
-# List of provinces and general words to ignore
-EXCLUDE_WORDS = {
-    "ontario", "new brunswick", "manitoba", "nova scotia", "northwest territories",
-    "saskatchewan", "quebec", "new foundland", "british columbia", "alberta", "branches"
+# List of provinces and personal names to exclude
+EXCLUDE_NAMES = {
+    "northwest territories", "saskatchewan", "new brunswick", "manitoba", "quebec",
+    "new foundland", "nova scotia", "british columbia", "alberta", "ontario", "branches",
+    "gary sandlac", "rick farrell", "brad cook", "kyle sayer", "steve fry"
 }
 
-# Function to normalize company names (handles minor variations)
+# Function to normalize company names
 def normalize_name(name):
     if not isinstance(name, str):
         return ""
@@ -20,7 +21,7 @@ def normalize_name(name):
     name = re.sub(r'[^\w\s]', '', name)  # Remove punctuation
     return name
 
-# Function to load ALL sheets in the Excel file
+# Function to load all sheets in the Excel file
 def load_excel(file):
     all_sheets = pd.read_excel(file, sheet_name=None, dtype=str)  # Load all sheets as a dictionary
     combined_data = pd.DataFrame()  # Placeholder for merged data
@@ -37,23 +38,12 @@ def load_excel(file):
         if found_columns:
             combined_data = pd.concat([combined_data, df[found_columns]], ignore_index=True)
 
-        # Debugging output
-        print(f"Processed sheet: {sheet_name}, Found columns: {found_columns}, Extracted rows: {len(df)}")
-
     # Normalize and return unique company names
     return {normalize_name(name) for col in combined_data.columns for name in combined_data[col].dropna()}
 
-# Function to extract only the first line (company name) from the Word document
+# Function to extract only company names from the Word document
 def extract_company_names(doc):
     company_names = set()
-    
-    # List of names and provinces to exclude
-    EXCLUDE_NAMES = {
-        "northwest territories", "saskatchewan", "new brunswick", "manitoba", "quebec", 
-        "new foundland", "nova scotia", "british columbia", "alberta", "ontario", "branches",
-        "gary sandlac", "rick farrell", "brad cook", "kyle sayer", "steve fry"
-    }
-
     lines = [para.text.strip() for para in doc.paragraphs if para.text.strip()]  # Remove empty lines
 
     i = 0
@@ -80,8 +70,6 @@ def extract_company_names(doc):
 
     return company_names
 
-
-
 # Function to perform fuzzy matching (handles slight name variations)
 def fuzzy_match(set1, set2, threshold=90):
     matched = set()
@@ -91,6 +79,30 @@ def fuzzy_match(set1, set2, threshold=90):
                 matched.add(name1)
                 break
     return matched
+
+# Function to generate a Word document for updates
+def generate_word_update(missing_in_word, extra_in_word):
+    doc = Document()
+    doc.add_heading("Membership Directory Updates", level=1)
+
+    # Companies to Add
+    if missing_in_word:
+        doc.add_heading("Companies to Add:", level=2)
+        for company in sorted(missing_in_word):
+            doc.add_paragraph(company)
+
+    # Companies to Remove
+    if extra_in_word:
+        doc.add_heading("Companies to Remove:", level=2)
+        for company in sorted(extra_in_word):
+            doc.add_paragraph(company)
+
+    # Save to memory
+    output = BytesIO()
+    doc.save(output)
+    output.seek(0)
+
+    return output
 
 # Streamlit UI
 st.title("Membership Directory Checker")
@@ -105,13 +117,11 @@ if excel_file and word_file:
 
     # Load Excel data
     excel_companies = load_excel(excel_file)
-
     st.write(f"Total Companies in Excel (from all sheets): {len(excel_companies)}")
 
     # Load Word file and extract company names
     word_doc = Document(word_file)
     word_companies = extract_company_names(word_doc)
-
     st.write(f"Total Companies in Word Document: {len(word_companies)}")
 
     # Identify missing companies using exact and fuzzy matching
@@ -125,33 +135,26 @@ if excel_file and word_file:
     fuzzy_matched_extra = fuzzy_match(extra_in_word, excel_companies)
     extra_in_word -= fuzzy_matched_extra  # Remove fuzzy-matched names from extra list
 
+    # Generate Word document if there are changes
+    if missing_in_word or extra_in_word:
+        word_update = generate_word_update(missing_in_word, extra_in_word)
+        
+        st.download_button(
+            label="Download Word Update File",
+            data=word_update,
+            file_name="membership_updates.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    # Display changes
     st.write("### Missing Companies (Need to be Added)")
     if missing_in_word:
-        st.write(f"**Companies in Excel but Missing from Word:** {len(missing_in_word)}")
         st.write(list(missing_in_word))
     else:
         st.write("No new companies missing.")
 
     st.write("### Companies in Word but Not in Excel (Possible Removals)")
     if extra_in_word:
-        st.write(f"**Companies in Word but No Longer in Excel:** {len(extra_in_word)}")
         st.write(list(extra_in_word))
     else:
         st.write("No companies need to be removed.")
-
-    # Prepare CSV report
-    report_data = pd.DataFrame({
-        "Companies to Add": list(missing_in_word) + [""] * (max(len(missing_in_word), len(extra_in_word)) - len(missing_in_word)),
-        "Companies to Remove": list(extra_in_word) + [""] * (max(len(missing_in_word), len(extra_in_word)) - len(extra_in_word))
-    })
-
-    output = BytesIO()
-    report_data.to_csv(output, index=False)
-    output.seek(0)
-
-    st.download_button(
-        label="Download Report (CSV)",
-        data=output,
-        file_name="directory_changes.csv",
-        mime="text/csv"
-    )
