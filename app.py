@@ -9,7 +9,7 @@ from thefuzz import fuzz
 EXCLUDE_NAMES = {
     "northwest territories", "saskatchewan", "new brunswick", "manitoba", "quebec",
     "new foundland", "nova scotia", "british columbia", "alberta", "ontario", "branches",
-    "gary sandlac", "rick farrell", "brad cook", "kyle sayer", "steve fry"
+    "gary sandlac", "rick farrell", "brad cook", "kyle sayer", "steve fry", "holly rogers","cherlynne warner"
 }
 
 # Function to normalize company names
